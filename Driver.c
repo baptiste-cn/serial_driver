@@ -32,7 +32,21 @@
 #define PARITY_ODD 1
 #define PARITY_EVEN 2
 
+//freq 1.8432MHz
+#define FREQUENCY 1843200
 
+#define RX_REGISTER  (perso[port].address + 0x00)   //Receiver Buffer Register (read only)
+#define TX_REGISTER  (perso[port].address + 0x00)   //Transmitter Holding Register (write only)
+#define DLL_REGISTER (perso[port].address + 0x00)   //Divisor Latch LSB (read/write)
+#define DLM_REGISTER (perso[port].address + 0x01)   //Divisor Latch MSB (read/write)
+#define IER_REGISTER (perso[port].address + 0x01)   //Interrupt Enable Register (read/write)
+#define IIR_REGISTER (perso[port].address + 0x02)   //Interrupt Identification Register (read only)
+#define FCR_REGISTER (perso[port].address + 0x02)   //FIFO Control Register (write only)
+#define LCR_REGISTER (perso[port].address + 0x03)   //Line Control Register (read/write)
+#define MCR_REGISTER (perso[port].address + 0x04)   //Modem Control Register (read/write)
+#define LSR_REGISTER (perso[port].address + 0x05)   //Line Status Register (read only)
+#define MSR_REGISTER (perso[port].address + 0x06)   //MODEM Status Register (read only)
+#define SCR_REGISTER (perso[port].address + 0x07)   //Scratch Register (read/write)
 
 
 
@@ -76,6 +90,11 @@ struct perso{
     int tail;
     char* circular_buffer;
     uint8_t circular_buffer_size;
+    //int circular_buffer_empty;
+    //int circular_buffer_full;
+    //int bytes_count;
+    //int bytes_written;
+    //int bytes_read;
     int bytes_to_read;
     int bytes_to_write;
     int already_open;
@@ -86,6 +105,7 @@ struct perso{
     //déclaration de la queue de tâches
     wait_queue_head_t RdQ;
     wait_queue_head_t WrQ;
+    uint32_t address;
 };
 struct perso perso[NB_PORT];
 
@@ -94,7 +114,7 @@ struct perso perso[NB_PORT];
 //et après il faudrait l'allouer avec kmalloc(sizeof(struct StructurePilote), GFP_KERNEL); dans le init
 
 
-/*static int __init mod_init (void) {
+static int __init mod_init (void) {
     int n;
     alloc_chrdev_region (&My_dev,  0,  NB_PORT, "Serial driver");  //allocation dynamique du major et du minor (numéro d'unité-matériel)
 
@@ -123,7 +143,12 @@ struct perso perso[NB_PORT];
         perso[n].circular_buffer_size = BUFF_SIZE_DEFAULT;
         perso[n].bytes_to_read = 0;
         perso[n].bytes_to_write = BUFF_SIZE_DEFAULT;
+        //perso[n].bytes_count=0;
+        //perso[n].bytes_written=0;
+        //perso[n].bytes_read=0;
         perso[n].already_open=0;
+       // perso[n].circular_buffer_empty=1;
+       // perso[n].circular_buffer_full=0;
         sema_init(&perso[n].MySem, 1);
         spin_lock_init(&perso[n].MySpin);
         init_waitqueue_head(&perso[n].RdQ);
@@ -131,7 +156,7 @@ struct perso perso[NB_PORT];
     }
 
 
-    printk(KERN_WARNING"Big Driver : Hello World ! Serial driver = %u\n", MyModule_X);
+    printk(KERN_WARNING"Big Driverrrrrr : Hello World ! Serial driver = %u\n", MyModule_X);
 
     printk(KERN_WARNING"avant : debut open\n");
     printk("avant : debut open test\n");
@@ -142,64 +167,7 @@ struct perso perso[NB_PORT];
     
 
     return 0;
-}*/
-
-
-static int __init mod_init (void) {
-    int n;
-    if(alloc_chrdev_region (&My_dev,  0,  NB_PORT, "Serial driver") < 0){ //allocation dynamique du major et du minor (numÃ©ro d'unitÃ©-matÃ©riel)
-        printk(KERN_WARNING"Big Driver : Error allocating major and minor !\n");
-        return -EBUSY;
-    }
-
-    MyClass = class_create(THIS_MODULE, "Driver");  //crÃ©ation de la classe
-    if(IS_ERR(MyClass)){
-        printk(KERN_WARNING"Big Driver : Error creating class !\n");
-        unregister_chrdev_region(My_dev, NB_PORT);
-        return -EBUSY;
-    }
-
-    for (n = 0; n < NB_PORT; n++) {
-        device_create(MyClass, NULL, (My_dev + n), NULL, "MyModuleNode%d", n);
-    }
-
-    cdev_init(&My_cdev, &MyModule_fops); //initialisation de la structure cdev pour le pilote
-
-
-    for (n = 0; n < NB_PORT; n++){
-        //création des noeuds dans /dev
-        //initialisation des variables de la structure perso
-        perso[n].user=0;
-        perso[n].read=0;
-        perso[n].write=0;
-        perso[n].head=0;
-        perso[n].tail=0;
-        perso[n].circular_buffer_size = BUFF_SIZE_DEFAULT;
-        perso[n].bytes_to_read = 0;
-        perso[n].bytes_to_write = BUFF_SIZE_DEFAULT;
-        perso[n].already_open=0;
-        sema_init(&perso[n].MySem, 1);
-        spin_lock_init(&perso[n].MySpin);
-        init_waitqueue_head(&perso[n].RdQ);
-        init_waitqueue_head(&perso[n].WrQ);
-    }
-
-    //CDEV ADD: A FAIRE EN TOUT DERNIER 
-    if(cdev_add(&My_cdev, My_dev, NB_PORT) < 0){
-        printk(KERN_WARNING"Big Driver : Error adding cdev !\n");
-        for (n = 0; n < NB_PORT; n++) {
-            device_destroy(MyClass, (My_dev + n));  //destruction des noeuds
-        }
-        class_destroy(MyClass);
-        unregister_chrdev_region(My_dev, NB_PORT);
-        return -EBUSY;
-    }
-
-    printk(KERN_WARNING"Big Driver : Hello World ! Serial driver = %u\n", MyModule_X);
-
-    return 0;
 }
-
 
 static void __exit mod_exit (void) {
     int n;
