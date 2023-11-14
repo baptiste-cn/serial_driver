@@ -1,117 +1,13 @@
-#include <linux/init.h>
-#include <linux/module.h>
-#include <linux/moduleparam.h>
-#include <linux/fs.h>
-#include <linux/types.h>
-#include <linux/device.h>
-#include <linux/cdev.h>
-#include <linux/cred.h>
-#include <linux/kernel.h>
-#include <linux/kthread.h>
-#include <linux/uaccess.h>
-#include <linux/spinlock.h>
-
-#define BUFF_SIZE_DEFAULT 64
-#define LOCALBUFF_SIZE 4
-#define NB_PORT 2
-
-#define IOCTL_MAGIC_NUMBER 'k'
-#define SET_BAUD_RATE _IOW(IOCTL_MAGIC_NUMBER, 0, int)
-#define SET_DATA_SIZE _IOW(IOCTL_MAGIC_NUMBER, 1, int)
-#define SET_PARITY    _IOW(IOCTL_MAGIC_NUMBER, 2, int)
-#define GET_BUF_SIZE  _IOR(IOCTL_MAGIC_NUMBER, 3, int)
-#define SET_BUF_SIZE  _IOW(IOCTL_MAGIC_NUMBER, 4, int)
-
-#define BAUDRATE_MIN 50
-#define BAUDRATE_MAX 115200
-
-#define DATA_SIZE_MIN 5
-#define DATA_SIZE_MAX 8
-
-#define PARITY_NONE 0
-#define PARITY_ODD 1
-#define PARITY_EVEN 2
-
-//freq 1.8432MHz
-#define FREQUENCY 1843200
-
-#define RX_REGISTER  (perso[port].address + 0x00)   //Receiver Buffer Register (read only)
-#define TX_REGISTER  (perso[port].address + 0x00)   //Transmitter Holding Register (write only)
-#define DLL_REGISTER (perso[port].address + 0x00)   //Divisor Latch LSB (read/write)
-#define DLM_REGISTER (perso[port].address + 0x01)   //Divisor Latch MSB (read/write)
-#define IER_REGISTER (perso[port].address + 0x01)   //Interrupt Enable Register (read/write)
-#define IIR_REGISTER (perso[port].address + 0x02)   //Interrupt Identification Register (read only)
-#define FCR_REGISTER (perso[port].address + 0x02)   //FIFO Control Register (write only)
-#define LCR_REGISTER (perso[port].address + 0x03)   //Line Control Register (read/write)
-#define MCR_REGISTER (perso[port].address + 0x04)   //Modem Control Register (read/write)
-#define LSR_REGISTER (perso[port].address + 0x05)   //Line Status Register (read only)
-#define MSR_REGISTER (perso[port].address + 0x06)   //MODEM Status Register (read only)
-#define SCR_REGISTER (perso[port].address + 0x07)   //Scratch Register (read/write)
-
+#include <Driver.h>
 
 
 MODULE_AUTHOR("Baptiste & Loïs");
 MODULE_LICENSE("Dual BSD/GPL");
 MODULE_DESCRIPTION("Driver");
 
-int MyModule_X = 5;
-
-//déclarations de fonctions
-static int MyModule_open(struct inode *inode, struct file *filp);
-static int MyModule_release(struct inode *inode, struct file *filp);
-static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, loff_t *f_pos);
-static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t count, loff_t *f_pos);
-static long MyModule_ioctl(struct file *filp, unsigned int cmd, unsigned long arg);
-
-
 module_param(MyModule_X, int, S_IRUGO);
 
 EXPORT_SYMBOL_GPL(MyModule_X);  //permet de rendre la variable locale Module_X visible par les autres modules
-
-dev_t My_dev;  //variable globale pour le major et le minor
-struct class *MyClass;  //variable globale pour la classe
-struct cdev My_cdev;
-
-struct file_operations MyModule_fops = {   //le nom "MyModule" peut partout être remplacé par "pilote"
-	.owner		=	THIS_MODULE,
-	.read		=	MyModule_read,
-	.write		=	MyModule_write,
-	.open		=	MyModule_open,
-	.release	=	MyModule_release,
-	.unlocked_ioctl = 	MyModule_ioctl
-};
-
-struct perso{
-    int read; 
-    int write;
-    int uid;
-    int user;
-    int head;
-    int tail;
-    char* circular_buffer;
-    uint8_t circular_buffer_size;
-    //int circular_buffer_empty;
-    //int circular_buffer_full;
-    //int bytes_count;
-    //int bytes_written;
-    //int bytes_read;
-    int bytes_to_read;
-    int bytes_to_write;
-    int already_open;
-    //déclaration sémaphore
-    struct semaphore MySem;
-    //déclaration spinlock
-    spinlock_t MySpin;
-    //déclaration de la queue de tâches
-    wait_queue_head_t RdQ;
-    wait_queue_head_t WrQ;
-    uint32_t address;
-};
-struct perso perso[NB_PORT];
-
-
-//cela équivaut à faire struct StructurePilote *Pilote; 
-//et après il faudrait l'allouer avec kmalloc(sizeof(struct StructurePilote), GFP_KERNEL); dans le init
 
 
 static int __init mod_init (void) {
@@ -143,31 +39,67 @@ static int __init mod_init (void) {
         perso[n].circular_buffer_size = BUFF_SIZE_DEFAULT;
         perso[n].bytes_to_read = 0;
         perso[n].bytes_to_write = BUFF_SIZE_DEFAULT;
-        //perso[n].bytes_count=0;
-        //perso[n].bytes_written=0;
-        //perso[n].bytes_read=0;
         perso[n].already_open=0;
-       // perso[n].circular_buffer_empty=1;
-       // perso[n].circular_buffer_full=0;
         sema_init(&perso[n].MySem, 1);
         spin_lock_init(&perso[n].MySpin);
         init_waitqueue_head(&perso[n].RdQ);
         init_waitqueue_head(&perso[n].WrQ);
     }
 
+    //config port 1
+    perso[0].address = 0xC030;
+    perso[0].PortIRQ = 21;
 
-    printk(KERN_WARNING"Big Driverrrrrr : Hello World ! Serial driver = %u\n", MyModule_X);
+    //config port 2
+    perso[1].address = 0xC020;
+    perso[1].PortIRQ = 22;
 
-    printk(KERN_WARNING"avant : debut open\n");
-    printk("avant : debut open test\n");
+    //initialisation des ports
+    if (request_region(perso[0].BaseAddr, PORT_SIZE, "request_region") == NULL) {
+        printk(KERN_WARNING "Big Driver : request_region() unsuccesfull--------0 \n");
+        return - EPERM;
+    }
+    if (request_region(perso[1].BaseAddr, PORT_SIZE, "request_region") == NULL) {
+        printk(KERN_WARNING "Big Driver : request_region() unsuccesfull---------1 \n");
+        release_region(perso[0].PortIRQ, PORT_SIZE);//car pilote ne peut pas s'installer
+        for (n = 0; n < NB_PORT; n++) {
+            device_destroy(MyClass, (My_dev + n));  //destruction des noeuds
+        }
+        class_destroy(MyClass);
+        unregister_chrdev_region(My_dev, NB_PORT);
+        return - EPERM;
+    }
 
-    //A FAIRE EN TOUT DERNIER 
-    cdev_add(&My_cdev, My_dev, NB_PORT); 
+    if(request_irq(perso[0].PortIRQ, &isrFunc,IRQF_SHARED, "MonPortSerie_0_IRQ",&(pdata[0]))) {
+        printk(KERN_WARNING "Big Driver : Request_irq unsuccesfull  \n");
+        release_region(perso[0].PortIRQ, PORT_SIZE);
+    }
 
-    
+    if(request_irq(perso[1].PortIRQ, &isrFunc,IRQF_SHARED, "MonPortSerie_1_IRQ",&(pdata[1]))) {
+        printk(KERN_WARNING "Big Driver : Request_irq unsuccesfull  \n");
+        release_region(perso[1].PortIRQ, PORT_SIZE);
+    }
+
+    DLAB = 0x80;
+
+
+
+     //CDEV ADD: A FAIRE EN TOUT DERNIER 
+    if(cdev_add(&My_cdev, My_dev, NB_PORT) < 0){
+        printk(KERN_WARNING"Big Driver : Error adding cdev !\n");
+        for (n = 0; n < NB_PORT; n++) {
+            device_destroy(MyClass, (My_dev + n));  //destruction des noeuds
+        }
+        class_destroy(MyClass);
+        unregister_chrdev_region(My_dev, NB_PORT);
+        return -EBUSY;
+    }
+
+    printk(KERN_WARNING"Big Driver : Hello World ! Serial driver = %u\n", MyModule_X);
 
     return 0;
 }
+
 
 static void __exit mod_exit (void) {
     int n;
@@ -185,9 +117,16 @@ static void __exit mod_exit (void) {
 
     //ici on pourrait faire un kfree(Pilote) si on avait fait un kmalloc(Pilote) dans le init
 
+    release_region(perso[0].PortIRQ, PORT_SIZE);
+    release_region(perso[1].PortIRQ, PORT_SIZE);
+
+    free_irq(perso[0].PortIRQ,&(perso[0]));
+    free_irq(perso[1].PortIRQ,&(perso[1]));
+
+	
     printk(KERN_WARNING"Big Driver : Goodbye cruel World !\n");
 
-}   
+}     
 
 static int MyModule_open(struct inode *inode, struct file *filp){
     
@@ -296,25 +235,24 @@ static int MyModule_release(struct inode *inode, struct file *filp){
     //1: libérer les données personnelles (filp->private_data)
     //2: arrêter le matériel à la dernière "libération"
 
-    //int port = MINOR(inode->i_rdev);
-
-
     struct perso *p = ((struct perso *) filp->private_data);
 
     //ressources partagées: protection d'accès avec un spinlock (car le temps d'exécution de la fonction est court)
     spin_lock(&p->MySpin);
 
     if(filp->f_flags & O_RDONLY){
-      p->read = 0;
-      //désactiver l'interruption de réception
+        p->read = 0;
+        //désactiver l'interruption de réception
+
+      
     }
     else if(filp->f_flags & O_WRONLY){
-      p->write = 0;
+        p->write = 0;
     }
     else if(filp->f_flags & O_RDWR){
-      p->read = 0;
-      p->write = 0;
-      //désactiver l'interruption de réception
+        p->read = 0;
+        p->write = 0;
+        //désactiver l'interruption de réception
     }
     else{
         spin_unlock(&p->MySpin);
@@ -324,7 +262,6 @@ static int MyModule_release(struct inode *inode, struct file *filp){
     if((p->read == 0) && (p->write == 0)){
         p->uid = 0;
     }
-    //p->uid = 0; //on libère l'usager
 
     spin_unlock(&p->MySpin);
 
@@ -340,7 +277,6 @@ static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, 
     //kernel space -> user space
     int n = 0;
     char local_buffer[LOCALBUFF_SIZE];   // Tampon local
-    //int bytes_to_read = 0;
     int bytes_read = 0;
     int bytes_count = 0;
     int bytes_not_copied = 0;
@@ -354,16 +290,10 @@ static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, 
         return -EINVAL;
     }
 
-    //Étape 2: vérifier que le tampon circulaire n'est pas vide
-   /* if(p->circular_buffer_empty){
-        spin_unlock(&p->MySpin);
-        return -EAGAIN;
-    }*/
-
     p->bytes_to_read = p->head-p->tail;    //si égal 0 alors forcement vide
     spin_unlock(&p->MySpin);
     
-    //Étape 3: aller chercher les données dans le buffer circulaire et les remplir dans le tampon local (au maximum de la taille de celui-ci) puis les copier dans l'espace utilisateur
+    //Étape 2: aller chercher les données dans le buffer circulaire et les remplir dans le tampon local (au maximum de la taille de celui-ci) puis les copier dans l'espace utilisateur
 
     //protection d'accès avec sémaphore car le temps d'exécution de la fonction est long
     if(down_interruptible(&p->MySem)){ //si le sémaphore est pris par un autre processus
@@ -380,8 +310,6 @@ static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, 
             if(wait_event_interruptible(p->RdQ, p->bytes_to_read>0)){  //sinon, dort jusqu'à ce qu'il y ait des données dans le buffer circulaire (mode bloquant)
                 return -ERESTARTSYS;  //permet de détecter IRQ systeme
             }
-            //down(&p->MySem); //on reprend le sémaphore
-            //bytes_to_read = p->head-p->tail;
             if(down_interruptible(&p->MySem)){ //si le sémaphore est pris par un autre processus
             return -ERESTARTSYS;  //permet de détecter IRQ systeme
             }
@@ -399,7 +327,7 @@ static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, 
         bytes_count--;
         local_buffer[n] = p->circular_buffer[p->tail];  //on copie les données dans le tampon local
 
-        //Étape 4: copier les données dans l'espace utilisateur : dès que le buffer local est rempli ou que le nombre de données voulu est atteint
+        //Étape 3: copier les données dans l'espace utilisateur : dès que le buffer local est rempli ou que le nombre de données voulu est atteint
         if(n==LOCALBUFF_SIZE-1 || bytes_count == 0){
             bytes_not_copied = copy_to_user(buf + offset_user, &local_buffer, n+1);  //on copie les données dans l'espace utilisateur
             offset_user = offset_user + LOCALBUFF_SIZE;
@@ -409,11 +337,7 @@ static ssize_t MyModule_read(struct file *filp, char __user *buf, size_t count, 
         }
         n = (n+1)%LOCALBUFF_SIZE;
         p->tail = (p->tail + 1) % (p->circular_buffer_size); //on incrémente le pointeur de lecture en restant dans les limites du buffer
-        /*if(p->tail==p->head){
-            p->circular_buffer_empty = 1;
-        }*/
 
-        //p->circular_buffer_full = 0;
         bytes_read++;
     }
 
@@ -430,7 +354,6 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
     //user space -> kernel space
     int n = 0;
     char local_buffer[LOCALBUFF_SIZE];   // Tampon local
-    //int bytes_to_write = 0;
     int bytes_written = 0;
     int bytes_count = 0;
     int bytes_not_copied = 0;
@@ -445,22 +368,13 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
         return -EINVAL;
     }
 
-    //Étape 2: vérifier que le tampon circulaire n'est pas plein
-    /*if(p->circular_buffer_full){
-        spin_unlock(&p->MySpin);
-        return -EAGAIN;
-    }*/
-
-
-   // bytes_to_write = p->tail-p->head;	//nombre de bytes dispo dans le buffer circulaire à écrire
-	
-
-
     spin_unlock(&p->MySpin);
 
     if(down_interruptible(&p->MySem)){ //si le sémaphore est pris par un autre processus
         return -ERESTARTSYS;  //permet de détecter IRQ systeme
     }
+
+    //Étape 2: aller chercher les données dans le buffer circulaire et les remplir dans le tampon local (au maximum de la taille de celui-ci) puis les copier dans l'espace kernel
 
     p->bytes_to_write = p->circular_buffer_size - (p->head-p->tail);
 
@@ -475,8 +389,6 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
             if(wait_event_interruptible(p->WrQ, p->bytes_to_write>0)){  //sinon, dort jusqu'à ce qu'il y ait de la place dans le buffer circulaire (mode bloquant)
                 return -ERESTARTSYS;  //permet de détecter IRQ systeme
             }
-            //down(&p->MySem); //on reprend le sémaphore
-           // bytes_to_write = p->tail-p->head;
             if(down_interruptible(&p->MySem)){ //si le sémaphore est pris par un autre processus
                 return -ERESTARTSYS;  //permet de détecter IRQ systeme
             }
@@ -484,10 +396,8 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
     }
 
     p->bytes_to_write = p->circular_buffer_size - (p->head-p->tail);
-    //bytes_count = (bytes_to_write>count)?count:bytes_to_write;	//on prend le minimum entre le nombre de données demandées et le nombre de données disponibles
-
-
-	bytes_count = (p->bytes_to_write>count)?count:p->bytes_to_write;
+    
+	bytes_count = (p->bytes_to_write>count)?count:p->bytes_to_write; //on prend le minimum entre le nombre de données demandées et le nombre de données disponibles
 	
 	printk("count write : %d\n", bytes_count);
 
@@ -512,11 +422,7 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
 
         n = (n+1)%LOCALBUFF_SIZE;
         p->head = (p->head + 1) % (p->circular_buffer_size); //on incrémente le pointeur d'écriture en restant dans les limites du buffer
-        /*if(p->head==p->tail){
-            p->circular_buffer_full = 1;
-        }*/
 
-       // p->circular_buffer_empty = 0;
         bytes_count--;
         bytes_written++;
        }
@@ -525,7 +431,7 @@ static ssize_t MyModule_write(struct file *filp, const char __user *buf, size_t 
     up(&p->MySem); //on libère le sémaphore
     wake_up_interruptible(&p->RdQ); //on réveille les tâches qui dorment dans la queue
 
-//Étape 5: retourner le nombre de données écrites
+    //Étape 5: retourner le nombre de données écrites
     return bytes_written;
 }
 
@@ -541,38 +447,107 @@ static long MyModule_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
     spin_lock(&p->MySpin);
     
     switch(cmd){
+        //Permet de changer la vitesse de communication du Port Série. La valeur permise se situe dans la plage 50 à 115200 Baud.
         case SET_BAUD_RATE:
-            //TODO WHEN WE CAN
-            //- Permet de changer la vitesse de communication du Port Série. La valeur permise se situe dans la plage 50 à 115200 Baud
+            //DONE
             if(arg<BAUDRATE_MIN || arg>BAUDRATE_MAX){
                 spin_unlock(&p->MySpin);
+                printk(KERN_WARNING"Big Driver : Error setting baud rate, value not between 50 and 115200 !\n");
                 return -EINVAL;
             }
+
+            uint8_t temp_DL;
+
+            //DL controle la vitesse de transmission -> c'est lui qu'on doit changer
+            LCR |= DLAB; //on active le DLAB pour pouvoir écrire dans les registres DLL et DLM
+            outb(LCR, p->address + LCR_REGISTER); //on écrit dans le registre LCR
+            temp_DL = (FREQUENCY/16*arg); //on calcule la valeur à mettre dans les registres DLL et DLM
+            DLL = temp_DL & 0xFF; //on récupère les 8 bits de poids faible
+            DLM = (temp_DL >> 8) & 0xFF; //on récupère les 8 bits de poids fort
+            outb(DLL, p->address + DLL_REGISTER); //on écrit dans le registre DLL
+            outb(DLM, p->address + DLM_REGISTER); //on écrit dans le registre DLM
+            LCR &= ~DLAB; //on désactive le DLAB
+            outb(LCR, p->address + LCR_REGISTER); //on écrit dans le registre LCR
+
+            retval = 1;
+
             break;
 
+        //Permet de changer la taille des données de communication. La valeur permise se situe dans la plage 5 à 8 bits. 
         case SET_DATA_SIZE:
-            //TODO WHEN WE CAN
-            //- Permet de changer la taille des données de communication. La valeur permise se situe dans la plage 5 à 8 bits
+            //DONE
             if(arg<DATA_SIZE_MIN || arg>DATA_SIZE_MAX){
                 spin_unlock(&p->MySpin);
+                printk(KERN_WARNING"Big Driver : Error setting data size !\n");
                 return -EINVAL;
             }
+
+            //il faut ici changer la valeur des deux derniers bits du registre LCR en fonction de la valeur de arg
+
+            if(arg==DATA_SIZE_MIN){ //00
+                LCR &= 0xFC; //on met à 0 les deux derniers bits
+            }
+
+            if(arg==6){  //01
+                LCR &= 0xFD; //on met à 0 le deuxième bit
+                LCR |= 0x02; //on met à 1 le premier bit
+            }
+
+            if(arg==7){ //10
+                LCR &= 0xFE; //on met à 0 le premier bit
+                LCR |= 0x01; //on met à 1 le deuxième bit
+            }
+
+            if(arg==DATA_SIZE_MAX){ //11
+                LCR |= 0x03; //on met à 1 les deux derniers bits
+            }
+
+            outb(LCR, p->address + LCR_REGISTER); //on écrit dans le registre LCR
+
+            retval = 1;
+
             break;
 
-        case SET_PARITY:
-            //TODO WHEN WE CAN
-            //- Permet de choisir le type de parité qui sera utilisée lors des communications. La valeur permise est :0 : Pas de parité, 1 : Parité impaire, 2 : Parité paire 
+        //Permet de choisir le type de parité qui sera utilisée lors des communications. La valeur permise est : 0 : Pas de parité 1 : Parité impaire 2 : Parité paire 
+        case SET_PARITY: //DONE 
             if(arg<PARITY_NONE || arg>PARITY_EVEN){
                 spin_unlock(&p->MySpin);
+                printk(KERN_WARNING"Big Driver : Error setting parity !\n");
                 return -EINVAL;
             }
+
+            //ici il faut changer la valeur des bits 3 et 4 du registre LCR en fonction de la valeur de arg
+            //bit 4 : EPS -> 0: parité impaire, 1: parité paire
+            //bit 3 : PEN -> 0: pas de parité, 1: parité
+
+            if(arg==PARITY_NONE){ //00
+                LCR &= 0xE7; //on met à 0 les bits 3 et 4
+                break;
+            }
+
+            if(arg==PARITY_ODD){ //01
+                LCR &= 0xEF; //on met à 0 le bit 4
+                LCR |= 0x08; //on met à 1 le bit 3
+                break;
+            }
+
+            if(arg==PARITY_EVEN){ //11
+                LCR |= 0x18; //on met à 1 les bits 3 et 4
+                break;
+            }
+
+            outb(LCR, p->address + LCR_REGISTER); //on écrit dans le registre LCR
+
+            retval = 1;
+
             break;
         
+        //Retourne la taille des tampons RxBuf et TxBuf (note : les deux ont la même taille)
         case GET_BUF_SIZE:
             //DONE
-            //- Retourne la taille des tampons RxBuf et TxBuf (note : les deux ont la même taille)
             retval = p->circular_buffer_size;
             break;
+
 
         case SET_BUF_SIZE:
             //DONE (j'espère)
@@ -591,6 +566,7 @@ static long MyModule_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
             //1: on check les user perms
             if(!capable(CAP_SYS_ADMIN)){
                 spin_unlock(&p->MySpin);
+                printk(KERN_WARNING"Big Driver : Error ioctl, no user perms !\n");
                 return -EPERM;
             }
 
@@ -634,6 +610,7 @@ static long MyModule_ioctl(struct file *filp, unsigned int cmd, unsigned long ar
 
         default:
             spin_unlock(&p->MySpin);
+            printk(KERN_WARNING"Big Driver : Error ioctl, wrong command !\n");
             return -ENOTTY;
 
         
